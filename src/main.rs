@@ -15,6 +15,7 @@ struct Gemline{
     rendertype:GemRenderType,
     metadata:String
 }
+
 enum GemRenderType{
     NORMAL,
     HEADING,
@@ -33,7 +34,10 @@ struct Nest {
     current_gemtxt_pg:Vec<Gemline>,
     sender:Sender<String>,
     receiver:Receiver<QueryResponse>,
-    is_waiting_on_query:bool
+    is_waiting_on_query:bool,
+    pane_settings:bool,
+    url_history:Vec<String>,
+    url_hist_index:usize
 }
 
 struct QueryResponse{
@@ -106,7 +110,10 @@ impl Default for Nest {
             current_gemtxt_pg: vec![],
             sender: s1,
             receiver: r2,
-            is_waiting_on_query: false
+            is_waiting_on_query: false,
+            pane_settings: false,
+            url_history: vec![],
+            url_hist_index: 0
         }
     }
 }
@@ -118,6 +125,7 @@ impl epi::App for Nest {
 
     fn update(&mut self, ctx: &egui::CtxRef, frame: &mut epi::Frame<'_>) {
         let Self { .. } = self;
+
 
         //check thread results
         let mut has_new_data = true;
@@ -212,11 +220,52 @@ impl epi::App for Nest {
             self.current_content_type = data.contenttype;
             self.is_waiting_on_query = false;
         }
+
+        //draw tab bar
+        egui::TopBottomPanel::top("wrap_app_top_bar").show(ctx, |ui| {
+            egui::trace!(ui);
+            ui.horizontal_wrapped(|ui| {
+                if ui.button("<").clicked(){
+                    if self.url_hist_index != 0 {
+                        self.url_hist_index -= 1;
+                        if self.url_hist_index < 0 {
+                            self.url_hist_index = 0;
+                        }
+                        self.url = self.url_history[self.url_hist_index].clone();
+                        self.is_waiting_on_query = true;
+                        self.sender.send(self.url.clone());
+                    }
+                }
+                if ui.button("⟳").clicked(){
+                    self.is_waiting_on_query = true;
+                    self.sender.send(self.url.clone());
+                }
+                if ui.button(">").clicked(){
+                    if self.url_history.len() > 0 {
+                        self.url_hist_index += 1;
+                        if self.url_hist_index > self.url_history.len() - 1 {
+                            self.url_hist_index = self.url_history.len() - 1
+                        }
+                        self.url = self.url_history[self.url_hist_index].clone();
+                        self.is_waiting_on_query = true;
+                        self.sender.send(self.url.clone());
+                    }
+                }
+               if ui.button("⚙").clicked(){
+                self.pane_settings = !self.pane_settings;
+               }
+            });
+        });
+
+        //draw main window
         egui::CentralPanel::default().show(ctx, |ui| {
+            egui::trace!(ui);
             ui.horizontal(|ui| {
                 ui.add_sized([500.,15.], egui::TextEdit::singleline(&mut self.url));
                 if ui.button("Browse!").clicked() {
                     self.is_waiting_on_query = true;
+                    self.url_history.push(self.url.clone());
+                    self.url_hist_index += 1;
                     self.sender.send(self.url.clone());
                 }
                 if !self.is_waiting_on_query {
@@ -254,28 +303,32 @@ impl epi::App for Nest {
                     ui.label("0x22 Resource Not Found");
                 },
                 0xE0 => {
-                    for gmln in self.current_gemtxt_pg.iter(){
-                        match gmln.rendertype{
-                            GemRenderType::NORMAL => {ui.label(gmln.content.clone());},
-                            GemRenderType::HEADING => {ui.add(egui::Label::new(gmln.content.clone()).strong().text_style(egui::TextStyle::Heading));},
-                            GemRenderType::SUBHEADING =>{ui.add(egui::Label::new(gmln.content.clone()).strong().text_style(egui::TextStyle::Button));},
-                            GemRenderType::SUBSUBHEADING => {ui.strong(gmln.content.clone());},
-                            GemRenderType::LIST => {ui.label(format!("• {}",gmln.content.clone()));},
-                            GemRenderType::QUOTE => {ui.add(egui::Label::new(gmln.content.clone()).italics().strong());},
-                            GemRenderType::LINK => {
-                                if ui.add(egui::Label::new(gmln.content.clone()).sense(egui::Sense::click())).clicked() {
-                                  //check what type of URL it is
-                                    if gmln.metadata.starts_with("piper://"){
-                                        self.is_waiting_on_query = true;
-                                        self.sender.send(gmln.metadata.clone());
-                                    } else {
-                                        //TODO: Open in sys browser or smth?
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for gmln in self.current_gemtxt_pg.iter() {
+                            match gmln.rendertype {
+                                GemRenderType::NORMAL => { ui.label(gmln.content.clone()); },
+                                GemRenderType::HEADING => { ui.add(egui::Label::new(gmln.content.clone()).strong().text_style(egui::TextStyle::Heading)); },
+                                GemRenderType::SUBHEADING => { ui.add(egui::Label::new(gmln.content.clone()).strong().text_style(egui::TextStyle::Button)); },
+                                GemRenderType::SUBSUBHEADING => { ui.strong(gmln.content.clone()); },
+                                GemRenderType::LIST => { ui.label(format!("• {}", gmln.content.clone())); },
+                                GemRenderType::QUOTE => { ui.add(egui::Label::new(gmln.content.clone()).italics().strong()); },
+                                GemRenderType::LINK => {
+                                    if ui.add(egui::Label::new(gmln.content.clone()).sense(egui::Sense::click())).clicked() {
+                                        //check what type of URL it is
+                                        if gmln.metadata.starts_with("piper://") {
+                                            self.is_waiting_on_query = true;
+                                            self.url_history.push(self.url.clone());
+                                            self.url_hist_index += 1;
+                                            self.sender.send(gmln.metadata.clone());
+                                        } else {
+                                            //TODO: Open in sys browser or smth?
+                                        }
                                     }
-                                }
-                            },
-                            GemRenderType::MONOSPACE => {ui.code(gmln.content.clone());}
-                        };
-                    }
+                                },
+                                GemRenderType::MONOSPACE => { ui.code(gmln.content.clone()); }
+                            };
+                        }
+                    });
                 }
                 0xF1 => {
                     ui.label("Finished file download");
@@ -288,6 +341,29 @@ impl epi::App for Nest {
                 }
             }
         });
+
+        //draw the settings pane
+
+        if self.pane_settings{
+            egui::Window::new("⚙ Settings").show(ctx, |ui| {
+                egui::trace!(ui);
+                ui.label("Appearance");
+                ui.separator();
+                ui.horizontal_wrapped(|ui| {
+                    ui.label("Light/Dark Mode: ");
+                    egui::widgets::global_dark_light_mode_buttons(ui);
+                });
+                ui.label("Debug");
+                ui.separator();
+                if ui.button("Toggle Trace").clicked(){
+                    ui.ctx().set_debug_on_hover(!ui.ctx().debug_on_hover())
+                }
+
+                ui.separator();
+                ui.small("Nest v0.1.0 \n (C) Luminoso 2021 / MIT License")
+            });
+        }
+
         // Resize the native window to be just the size we need it to be:
         frame.set_window_size(ctx.used_size());
     }
